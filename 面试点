@@ -1,0 +1,8 @@
+1.todo计划，remind机制
+2.subagent message列表隔离，作为工具调用
+3.skill 元数据平在SystemPrompt里，加载时使用load_skill工具加载
+4.工具危险操作交给用户确认
+5.上下文3层压缩:
+    a.滑动窗口：到达一定对话数阈值保留头n和尾巴m
+    b.工具压缩：当工具调用数目达到阈值时，将message列表中的tool_result改写成rerun if need
+    c.LLM摘要:根据token数，输入LLM前检查，LLM由于TOKEN超范围报错压缩，封装为工具，LLM自主调用，并且将对话细节以JSONL格式存储，根据时间分类，可以做一个检索工具提供LLM查询
