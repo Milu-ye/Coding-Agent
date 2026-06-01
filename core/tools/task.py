@@ -4,6 +4,8 @@ from pyexpat.errors import messages
 
 from core.react_agent import Agent
 from core.tools.base import Tool
+from core.utils.extract_util import extract_text
+
 WORKDIR = os.getcwd()
 
 

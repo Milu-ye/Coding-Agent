@@ -1,34 +1,33 @@
 import json
 import re
+import time
 from pathlib import Path
 
-from anthropic import Anthropic
+from .global_var import client, WORKDIR
 
 from configs import app_config
 from core.utils.extract_util import extract_text
 from core.utils.parse_util import parse_frontmatter
+MEMORY_DIR = WORKDIR / "memory"
+MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 
-
-def write_memory_file(name: str, mem_type: str, description: str, body: str,memory_dir: str | Path):
+def write_memory_file(name: str, mem_type: str, description: str, body: str):
     """Write a single memory file with YAML frontmatter."""
-    if isinstance(memory_dir,str):
-        memory_dir = Path(memory_dir)
     slug = name.lower().replace(" ", "-").replace("/", "-")
     filename = f"{slug}.md"
-    filepath = memory_dir / filename
+    filepath = MEMORY_DIR / filename
     filepath.write_text(
         f"---\nname: {name}\ndescription: {description}\ntype: {mem_type}\n---\n\n{body}\n"
     )
-    _rebuild_index(memory_dir)
+    _rebuild_index()
     return filepath
 
 
-def _rebuild_index(memory_dir: str | Path):
+def _rebuild_index():
     """Rebuild MEMORY.md index from all memory files."""
-    if isinstance(memory_dir,str):
-        memory_dir = Path(memory_dir)
     lines = []
-    for f in sorted(memory_dir.glob("*.md")):
+    for f in sorted(MEMORY_DIR.glob("*.md")):
         if f.name == "MEMORY.md":
             continue
         raw = f.read_text()
@@ -36,14 +35,48 @@ def _rebuild_index(memory_dir: str | Path):
         name = meta.get("name", f.stem)
         desc = meta.get("description", body.split("\n")[0][:80])
         lines.append(f"- [{name}]({f.name}) — {desc}")
-    memory_index = memory_dir / "MEMORY.md"
-    memory_index.write_text("\n".join(lines) + "\n" if lines else "")
+    MEMORY_INDEX.write_text("\n".join(lines) + "\n" if lines else "")
 
-def select_relevant_memories(client: Anthropic,messages: list,memory_dir: str | Path, max_items: int = 5) -> list[str]:
+
+def read_memory_index() -> str:
+    """Read MEMORY.md index (injected into SYSTEM every turn)."""
+    if not MEMORY_INDEX.exists():
+        return ""
+    text = MEMORY_INDEX.read_text().strip()
+    return text if text else ""
+
+
+def read_memory_file(filename: str) -> str | None:
+    """Read a single memory file's full content."""
+    path = MEMORY_DIR / filename
+    if not path.exists():
+        return None
+    return path.read_text()
+
+
+def list_memory_files() -> list[dict]:
+    """List all memory files with metadata."""
+    result = []
+    for f in sorted(MEMORY_DIR.glob("*.md")):
+        if f.name == "MEMORY.md":
+            continue
+        raw = f.read_text()
+        meta, body = parse_frontmatter(raw)
+        result.append({
+            "filename": f.name,
+            "name": meta.get("name", f.stem),
+            "description": meta.get("description", ""),
+            "type": meta.get("type", "user"),
+            "body": body,
+        })
+    return result
+
+
+def select_relevant_memories(messages: list, max_items: int = 5) -> list[str]:
     """Select relevant memory filenames by matching recent conversation against
     memory names/descriptions. Uses a simple LLM call (or falls back to keyword
     matching on name+description)."""
-    files = list_memory_files(memory_dir)
+    files = list_memory_files()
     if not files:
         return []
 
@@ -112,19 +145,146 @@ def select_relevant_memories(client: Anthropic,messages: list,memory_dir: str | 
             if len(selected) >= max_items:
                 break
     return selected
-def list_memory_files(memory_dir: str | Path) -> list[dict]:
-    """List all memory files with metadata."""
-    result = []
-    for f in sorted(memory_dir.glob("*.md")):
-        if f.name == "MEMORY.md":
-            continue
-        raw = f.read_text()
-        meta, body = parse_frontmatter(raw)
-        result.append({
-            "filename": f.name,
-            "name": meta.get("name", f.stem),
-            "description": meta.get("description", ""),
-            "type": meta.get("type", "user"),
-            "body": body,
-        })
-    return result
+
+
+def load_memories(messages: list) -> str:
+    """Load relevant memory content for injection into context."""
+    selected_files = select_relevant_memories(messages)
+    if not selected_files:
+        return ""
+
+    parts = ["<relevant_memories>"]
+    for filename in selected_files:
+        content = read_memory_file(filename)
+        if content:
+            parts.append(content)
+    parts.append("</relevant_memories>")
+    return "\n\n".join(parts)
+
+
+def extract_memories(messages: list):
+    """Extract new memories from recent dialogue. Runs after each turn."""
+    # Collect recent conversation text
+    dialogue_parts = []
+    for msg in messages[-10:]:
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                str(getattr(b, "text", "")) for b in content
+                if getattr(b, "type", None) == "text"
+            )
+        if isinstance(content, str) and content.strip():
+            dialogue_parts.append(f"{role}: {content}")
+    dialogue = "\n".join(dialogue_parts)
+
+    if not dialogue.strip():
+        return
+
+    # Check existing memories to avoid duplicates
+    existing = list_memory_files()
+    existing_desc = "\n".join(f"- {m['name']}: {m['description']}" for m in existing) if existing else "(none)"
+
+    prompt = (
+        "Extract user preferences, constraints, or project facts from this dialogue.\n"
+        "Return a JSON array. Each item: {name, type, description, body}.\n"
+        "- name: short kebab-case identifier (e.g. 'user-preference-tabs')\n"
+        "- type: one of 'user' (user preference), 'feedback' (guidance), "
+        "'project' (project fact), 'reference' (external pointer)\n"
+        "- description: one-line summary for index lookup\n"
+        "- body: full detail in markdown\n"
+        "If nothing new or already covered by existing memories, return [].\n\n"
+        f"Existing memories:\n{existing_desc}\n\n"
+        f"Dialogue:\n{dialogue[:4000]}"
+    )
+
+    try:
+        response = client.messages.create(
+            model=app_config.MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=800
+        )
+        text = extract_text(response.content).strip()
+        # Extract JSON array from response
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if not match:
+            return
+        items = json.loads(match.group())
+        if not items:
+            return
+        count = 0
+        for mem in items:
+            name = mem.get("name", f"memory_{int(time.time())}")
+            mem_type = mem.get("type", "user")
+            desc = mem.get("description", "")
+            body = mem.get("body", "")
+            if desc and body:
+                write_memory_file(name, mem_type, desc, body)
+                count += 1
+        if count:
+            print(f"\n\033[33m[Memory: extracted {count} new memories]\033[0m")
+    except Exception:
+        pass
+
+
+
+
+def consolidate_memories(messages: list):
+    """Merge duplicate/stale memories. Triggered when file count ≥ threshold."""
+    files = list_memory_files()
+    if len(files) < app_config.MEMORY_CONSOLIDATE_THRESHOLD:
+        return
+
+    catalog = "\n\n".join(
+        f"## {f['filename']}\nname: {f['name']}\ndescription: {f['description']}\n{f['body']}"
+        for f in files
+    )
+
+    prompt = (
+        "Consolidate the following memory files. Rules:\n"
+        "1. Merge duplicates into one\n"
+        "2. Remove outdated/contradicted memories\n"
+        "3. Keep the total under 30 memories\n"
+        "4. Preserve important user preferences above all\n"
+        "Return a JSON array. Each item: {name, type, description, body}.\n\n"
+        f"{catalog[:16000]}"
+    )
+
+    try:
+        response = client.messages.create(
+            model=app_config.MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=3000
+        )
+        text = extract_text(response.content).strip()
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if not match:
+            return
+        items = json.loads(match.group())
+
+        # Remove old memory files (keep MEMORY.md)
+        for f in MEMORY_DIR.glob("*.md"):
+            if f.name != "MEMORY.md":
+                f.unlink()
+
+        for mem in items:
+            name = mem.get("name", f"memory_{int(time.time())}")
+            mem_type = mem.get("type", "user")
+            desc = mem.get("description", "")
+            body = mem.get("body", "")
+            if desc and body:
+                write_memory_file(name, mem_type, desc, body)
+
+        print(f"\n\033[33m[Memory: consolidated {len(files)} → {len(items)} memories]\033[0m")
+    except Exception:
+        pass
+
+
+# Build SYSTEM with memory index
+def build_system() -> str:
+    index = read_memory_index()
+    memories_section = f"\n\nMemories available:\n{index}" if index else ""
+    return (
+        f"You are a coding agent at {WORKDIR}."
+        f"{memories_section}\n"
+        "Relevant memories are injected below. Respect user preferences from memory.\n"
+        "When the user says 'remember' or expresses a clear preference, extract it as a memory."
+    )
+
+SYSTEM = build_system()

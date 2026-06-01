@@ -1,0 +1,3 @@
+- [project-dependencies-tech-stack](project-dependencies-tech-stack.md) ¡ª Project relies on alibabacloud SDKs, aiohttp, and aiofiles for async cloud-based AI agent development
+- [project-structure-python-app](project-structure-python-app.md) ¡ª Modular Python application with core, configs, tools, hooks, and agent skills directories
+- [user-preference-indentation-tabs](user-preference-indentation-tabs.md) ¡ª User prefers tabs over spaces for code indentation

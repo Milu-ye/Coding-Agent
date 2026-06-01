@@ -4,14 +4,16 @@ import pathlib
 from anthropic import Anthropic
 
 from configs import app_config
-from core.hooks.before_llm_hook import remind_todos, snip_compact, miro_compact, compact_history
+from core.global_var import WORKDIR
+from core.hooks.start_of_iteration_hook import remind_todos, snip_compact, miro_compact, compact_history, \
+    collect_bg_task
+from core.memory import extract_memories, consolidate_memories, load_memories
 from core.react_agent import Agent, Event
 from core.skill import list_skills, SKILL_REGISTRY
 from core.tools import Bash, Edit, Read, Glob, Write, WriteTodo
 from core.tools.load_skill import LoadSkill
 from core.tools.task import Task
 
-WORKDIR = pathlib.Path(os.getcwd())
 SYSTEM = (
     f"""
     You are a coding agent at {WORKDIR.name}.
@@ -45,7 +47,9 @@ if __name__ == "__main__":
     write = Write()
     edit = Edit()
     write_todo = WriteTodo(3)
-    subagent = Agent(client=client,system_prompt=SUB_SYSTEM, tools=[bash, glob, read, write, edit],per_max_token=8000,transcript_dir=WORKDIR / "transcript",max_retry=3)
+    bash_for_subagent = Bash()
+    subagent = Agent(client=client,system_prompt=SUB_SYSTEM, tools=[bash_for_subagent, glob, read, write, edit],per_max_token=8000,transcript_dir=WORKDIR / "transcript",max_retry=3)
+    subagent.register_hook(Event.START_OF_ITERATION,collect_bg_task(bash_for_subagent.bg_ids))
     task = Task(subagent)
     load_skill = LoadSkill(SKILL_REGISTRY)
 
@@ -54,10 +58,13 @@ if __name__ == "__main__":
     agent.register_hook(Event.START_OF_ITERATION,
                         snip_compact(100,40,5),
                         miro_compact(10,40,300),
-                        compact_history(client,100,WORKDIR / "transcript"),
+                        compact_history(client,50000,WORKDIR / "transcript"),
+                        collect_bg_task(bash.bg_ids),
                         remind_todos(write_todo))
+    agent.register_hook(Event.STOP,extract_memories,consolidate_memories)
 
     history = []
+
     while True:
         try:
             query = input("\033[36ms01 >> \033[0m")

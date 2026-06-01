@@ -6,3 +6,5 @@
     a.滑动窗口：到达一定对话数阈值保留头n和尾巴m
     b.工具压缩：当工具调用数目达到阈值时，将message列表中的tool_result改写成rerun if need
     c.LLM摘要:根据token数，输入LLM前检查，LLM由于TOKEN超范围报错压缩，封装为工具，LLM自主调用，并且将对话细节以JSONL格式存储，根据时间分类，可以做一个检索工具提供LLM查询
+6.长期记忆:memory文件夹下，MEMORY.md作为索引,在进入react_agent时进行记忆的选择和注入，且记忆注入本次的message中，后续不可见
+7.后台任务，对于长耗时任务可以由模型决定启用后台任务

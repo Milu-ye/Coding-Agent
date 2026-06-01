@@ -8,6 +8,8 @@ from anthropic.types import MessageParam
 
 from configs import app_config
 from .context import compact_history_by_llm
+from .global_var import client
+from .memory import load_memories
 from .tools.base import Tool
 from .tools.decision import Decision
 
@@ -73,16 +75,21 @@ class Agent:
 
     def invoke(self,messages:list,max_iterator:int = 10):
         self.trigger_hook(Event.BEFORE_QUERY,query=messages[-1])
+        memories_content = load_memories(messages)
+        memory_turn = len(messages) - 1 if messages and isinstance(messages[-1].get("content"), str) else None
         for _ in range(max_iterator):
             self.trigger_hook(Event.START_OF_ITERATION, messages=messages)
             reactive_retries = 0
             try:
-                response = self.client.messages.create(
-                    model=app_config.MODEL,
-                    system=self.system_prompt,
-                    tools=self.tools_schema,
-                    messages=messages,
-                    max_tokens=8000,
+                request_messages = messages
+                if memories_content and memory_turn is not None and memory_turn < len(messages):
+                    request_messages = messages.copy()
+                    request_messages[memory_turn] = {
+                        **messages[memory_turn],
+                        "content": memories_content + "\n\n" + messages[memory_turn]["content"],
+                    }
+                response = client.messages.create(
+                    model=app_config.MODEL, system=self.system_prompt, messages=request_messages, tools=self.tools_schema, max_tokens=8000
                 )
                 messages.append({"role": "assistant", "content": response.content})
 

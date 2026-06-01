@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import TypedDict
 
+from core.global_var import WORKDIR
 from core.utils.parse_util import parse_frontmatter
 
 
@@ -11,7 +12,7 @@ class Skill(TypedDict):
     content: str
 
 SKILL_REGISTRY: dict[str, Skill] = {}
-SKILL_DIR = Path(__file__).parent.parent / "skills"
+SKILL_DIR = WORKDIR / "skills"
 
 
 

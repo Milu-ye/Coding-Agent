@@ -2,6 +2,7 @@ import pathlib
 
 from anthropic import Anthropic
 
+from core.background_task import collect_background_results
 from core.context import estimate_context, compact_history_by_llm
 from core.tools import WriteTodo
 
@@ -47,6 +48,18 @@ def compact_history(client:Anthropic,threshold:int,transcript_dir:str | pathlib.
             return
         summary = compact_history_by_llm(client,messages,transcript_dir)
         messages[:] = [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
+    return func
+
+def collect_bg_task(bg_ids:set[str]):
+    def func(messages:list):
+        notification = collect_background_results(bg_ids)
+        content = []
+        if notification:
+            for t in notification:
+                content.append({"type": "text", "text": t})
+            print(f"  \033[32m[inject] {len(notification)} background "
+                  f"notification(s)\033[0m")
+            messages.append({"role": "user", "content": content})
     return func
 
 
