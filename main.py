@@ -7,11 +7,13 @@ from configs import app_config
 from core.global_var import WORKDIR
 from core.hooks.start_of_iteration_hook import remind_todos, snip_compact, miro_compact, compact_history, \
     collect_bg_task
+from core.mcp.manager import MCPManager
 from core.memory import extract_memories, consolidate_memories, load_memories
 from core.react_agent import Agent, Event
 from core.skill import list_skills, SKILL_REGISTRY
 from core.tools import Bash, Edit, Read, Glob, Write, WriteTodo
 from core.tools.load_skill import LoadSkill
+from core.tools.mcp_tool import MCPToolWrapper
 from core.tools.task import Task
 
 SYSTEM = (
@@ -55,6 +57,16 @@ if __name__ == "__main__":
 
     agent = Agent(client=client,system_prompt=SYSTEM, tools=[bash, glob, read, write, edit,write_todo,task,load_skill], per_max_token=8000,transcript_dir=WORKDIR / "transcript",max_retry=3)
 
+    # MCP discovery — connect to configured MCP servers and register their tools
+    mcp_manager = MCPManager()
+    mcp_tools = mcp_manager.discover_and_connect()
+    for t in mcp_tools:
+        wrapper = MCPToolWrapper(t, mcp_manager)
+        agent.tools_schema.append(wrapper.schema)
+        agent.tools[wrapper.schema["name"]] = wrapper
+    if mcp_tools:
+        print(f"[MCP] Total {len(mcp_tools)} MCP tools registered\n")
+
     agent.register_hook(Event.START_OF_ITERATION,
                         snip_compact(100,40,5),
                         miro_compact(10,40,300),
@@ -81,3 +93,5 @@ if __name__ == "__main__":
                 if getattr(block, "type", None) == "text":
                     print(block.text)
         print()
+
+    mcp_manager.shutdown()
